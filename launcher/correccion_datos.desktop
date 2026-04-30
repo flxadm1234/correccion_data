@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Corrección de datos
+Comment=Herramienta para consultar DNIs y actualizar campos en MySQL
+Path=/home/framirez/proyectos/correccion_datos
+Exec=/home/framirez/proyectos/correccion_datos/.venv/bin/python -m correccion_datos
+Icon=/home/framirez/proyectos/correccion_datos/assets/icon.svg
+Terminal=false
+Categories=Utility;
+
