@@ -4,8 +4,10 @@ __pycache__/
 venv/
 .env
 .env.*
+!.env.example
 *.xlsx
 *.log
 *.txt
+!requirements.txt
 .DS_Store
 

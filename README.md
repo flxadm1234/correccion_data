@@ -37,7 +37,7 @@ python -m correccion_datos
 La app toma valores por defecto desde variables de entorno (opcionalmente desde un archivo `.env`).
 
 Variables principales:
-- `CD_API_BASE_URL` (por defecto: `http://31.220.84.86/`)
+- `CD_API_BASE_URL` (por defecto: `http://seaap.minsa.gob.pe/`)
 - `CD_DB_HOST` (por defecto: `31.220.84.86`)
 - `CD_DB_USER` (por defecto: `felix`)
 - `CD_DB_PASSWORD` (recomendado: setearlo en `.env`, no en el repo)
@@ -77,4 +77,3 @@ git clone git@github.com:flxadm1234/correccion_data.git correccion_datos
 cd correccion_datos
 ./scripts/setup_pi.sh
 ```
-
