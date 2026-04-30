@@ -431,12 +431,22 @@ class App:
         session = requests.Session()
         total = len(self.state.registros_encontrados)
         inicio = time.time()
+        stats = {
+            "procesados": 0,
+            "api_ok": 0,
+            "api_err": 0,
+            "sin_datos": 0,
+            "sin_campos": 0,
+            "db_ok": 0,
+            "db_sin_cambios": 0,
+            "db_err": 0,
+        }
 
         for idx, dni in enumerate(self.state.registros_encontrados):
             if self.stop_event.is_set():
                 break
 
-            self.log(f"Consultando DNI: {dni}")
+            self.log(f"[INFO] DNI {dni}: consultando SEAAP...")
 
             payload = {
                 "jsonrpc": "2.0",
@@ -568,18 +578,38 @@ class App:
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as e:
-                self.state.dnis_sin_datos.append({"dni": str(dni), "motivo": str(e)})
+                msg = str(e)
+                self.log(f"[ERROR] DNI {dni}: fallo consultando SEAAP: {msg}")
+                self.state.dnis_sin_datos.append({"dni": str(dni), "tipo": "api_exception", "motivo": msg})
+                stats["api_err"] += 1
                 continue
 
             if "error" in data:
                 msg = str(data.get("error", {}).get("message", "Error desconocido"))
-                self.state.dnis_sin_datos.append({"dni": str(dni), "motivo": msg})
+                self.log(f"[ERROR] DNI {dni}: SEAAP devolvió error: {msg}")
+                self.state.dnis_sin_datos.append({"dni": str(dni), "tipo": "api_error", "motivo": msg})
+                stats["api_err"] += 1
                 continue
 
             result = data.get("result", {}).get("value", {}) or {}
+            stats["api_ok"] += 1
+
+            if not result:
+                self.log(f"[WARN] DNI {dni}: extracción OK pero sin datos retornados (result vacío).")
+                self.state.dnis_sin_datos.append({"dni": str(dni), "tipo": "sin_datos", "motivo": "result vacío"})
+                stats["sin_datos"] += 1
+                continue
+
+            claves_interes = ["apellidos", "nombres", "fecha_nacimiento", "direccion", "name"]
+            campos_con_valor = [k for k in claves_interes if result.get(k)]
+            if campos_con_valor:
+                self.log(f"[OK] DNI {dni}: extracción OK. Campos con valor: {', '.join(campos_con_valor)}")
+            else:
+                self.log(f"[OK] DNI {dni}: extracción OK. Campos con valor: (ninguno de {', '.join(claves_interes)})")
 
             campos_sql: list[str] = []
             valores_sql: list[Any] = []
+            campos_actualizados: list[str] = []
             for clave_api, campo_bd in mapeo.items():
                 campo_bd = campo_bd.strip()
                 if not campo_bd:
@@ -592,8 +622,14 @@ class App:
                 if valor:
                     campos_sql.append(f"{campo_bd} = %s")
                     valores_sql.append(valor)
+                    campos_actualizados.append(campo_bd)
 
             if not campos_sql:
+                self.log(f"[WARN] DNI {dni}: no hay campos mapeados con valor para actualizar. Se omite.")
+                self.state.dnis_sin_datos.append(
+                    {"dni": str(dni), "tipo": "sin_campos", "motivo": "sin campos a actualizar"}
+                )
+                stats["sin_campos"] += 1
                 continue
 
             query = f"UPDATE {tabla} SET {', '.join(campos_sql)} WHERE {campo_dni} = %s"
@@ -604,6 +640,14 @@ class App:
                 cursor.execute(query, valores_sql)
                 conn.commit()
                 filas = cursor.rowcount
+                if filas > 0:
+                    stats["db_ok"] += 1
+                    self.log(f"[OK] DNI {dni}: actualización OK. Filas afectadas: {filas}. Campos: {', '.join(campos_actualizados)}")
+                    estado = "ACTUALIZADO"
+                else:
+                    stats["db_sin_cambios"] += 1
+                    self.log(f"[WARN] DNI {dni}: UPDATE ejecutado pero sin cambios (0 filas afectadas).")
+                    estado = "SIN_CAMBIOS"
                 self.state.datos_extraidos.append(
                     {
                         "dni": dni,
@@ -611,26 +655,44 @@ class App:
                         "apellidos": result.get("apellidos", ""),
                         "fecha_nacimiento": result.get("fecha_nacimiento", ""),
                         "direccion": result.get("direccion", ""),
-                        "estado": f"Filas afectadas: {filas}",
+                        "estado": estado,
+                        "filas_afectadas": str(filas),
+                        "campos_actualizados": ", ".join(campos_actualizados),
                     }
                 )
             except Exception as e:
-                self.state.dnis_sin_datos.append({"dni": str(dni), "motivo": str(e)})
+                msg = str(e)
+                self.log(f"[ERROR] DNI {dni}: error actualizando en MySQL: {msg}")
+                self.state.dnis_sin_datos.append({"dni": str(dni), "tipo": "db_error", "motivo": msg})
+                stats["db_err"] += 1
 
             progreso = int(((idx + 1) / total) * 100)
             elapsed = time.time() - inicio
             avg = elapsed / (idx + 1)
             remaining = max(0.0, avg * (total - (idx + 1)))
-            self.root.after(0, lambda p=progreso, el=elapsed, rem=remaining: self._update_progress(p, el, rem))
+            stats["procesados"] = idx + 1
+            self.root.after(
+                0,
+                lambda p=progreso, el=elapsed, rem=remaining, st=stats.copy(), tot=total: self._update_progress(p, el, rem, st, tot),
+            )
 
         try:
             conn.close()
         except Exception:
             pass
 
+        duracion = time.time() - inicio
+        self.log(
+            "[INFO] Resumen: "
+            f"procesados={stats['procesados']}/{total}, "
+            f"api_ok={stats['api_ok']}, api_err={stats['api_err']}, "
+            f"actualizados={stats['db_ok']}, sin_cambios={stats['db_sin_cambios']}, db_err={stats['db_err']}, "
+            f"sin_datos={stats['sin_datos']}, sin_campos={stats['sin_campos']}, "
+            f"duración={int(duracion)}s"
+        )
         self.root.after(0, self._on_automatizar_done)
 
-    def _update_progress(self, progreso: int, elapsed: float, remaining: float) -> None:
+    def _update_progress(self, progreso: int, elapsed: float, remaining: float, stats: dict[str, int], total: int) -> None:
         self.progress_var.set(progreso)
         self.progress_text.configure(text=f"{progreso}%")
         el_h, el_m = divmod(int(elapsed), 3600)
@@ -638,6 +700,10 @@ class App:
         rem_h, rem_m = divmod(int(remaining), 3600)
         rem_m, rem_s = divmod(rem_m, 60)
         self.time_text.configure(text=f"Duración: {el_h}h {el_m}m {el_s}s | ETA: {rem_h}h {rem_m}m {rem_s}s")
+        ok = stats.get("db_ok", 0)
+        sin_cambios = stats.get("db_sin_cambios", 0)
+        err = stats.get("api_err", 0) + stats.get("db_err", 0)
+        self.stats_label.configure(text=f"Procesados: {stats.get('procesados', 0)}/{total} | Actualizados: {ok} | Sin cambios: {sin_cambios} | Errores: {err}")
 
     def _on_automatizar_done(self) -> None:
         self.log("Proceso finalizado.")
