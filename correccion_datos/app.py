@@ -43,9 +43,11 @@ def _normalize_base_url(raw: str) -> str:
         return config.API_BASE_URL
     if not value.startswith(("http://", "https://")):
         value = "http://" + value
-    if not value.endswith("/"):
-        value += "/"
-    return value
+    p = urlparse(value)
+    origin = f"{p.scheme}://{p.netloc}"
+    if not origin.endswith("/"):
+        origin += "/"
+    return origin
 
 
 def _origin_from_base_url(base_url: str) -> str:
@@ -406,9 +408,9 @@ class App:
             return
 
         base_url = web_inputs["base_url"]
-        dataset_url = urljoin(base_url, "web/dataset/call_kw/actividades.actor/onchange")
         origin = _origin_from_base_url(base_url)
-        referer = urljoin(base_url, "web?")
+        dataset_url = urljoin(origin + "/", "web/dataset/call_kw/actividades.actor/onchange")
+        referer = urljoin(origin + "/", "web?")
 
         headers = {
             "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -416,7 +418,7 @@ class App:
             "Content-Type": "application/json",
             "Origin": origin,
             "Referer": referer,
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
             "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
             "DNT": "1",
@@ -446,6 +448,7 @@ class App:
             if self.stop_event.is_set():
                 break
 
+            stats["procesados"] = idx + 1
             self.log(f"[INFO] DNI {dni}: consultando SEAAP...")
 
             payload = {
